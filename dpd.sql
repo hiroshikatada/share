@@ -1,16 +1,28 @@
-CREATE TEMP FUNCTION parse_clauses(sql STRING)
+CREATE TEMP FUNCTION parse_select_and_from(sql_text STRING)
 RETURNS ARRAY<
   STRUCT<
-    clause_seq INT64,
-    clause STRING,
-    clause_start_seq INT64,
-    body_start_seq INT64,
-    body_end_seq INT64,
-    paren_depth INT64
+    record_seq INT64,
+    record_type STRING,
+
+    expression STRING,
+    output_alias STRING,
+    alias_type STRING,
+
+    source_type STRING,
+    source_name STRING,
+    source_alias STRING,
+    join_type STRING,
+
+    start_token_seq INT64,
+    end_token_seq INT64
   >
 >
 LANGUAGE js
 AS r"""
+/* ============================================================
+ * Lexer
+ * ============================================================ */
+
 function tokenize(sqlText) {
   const tokens = [];
 
@@ -21,80 +33,27 @@ function tokenize(sqlText) {
   let index = 0;
 
   const KEYWORDS = new Set([
-    "SELECT",
-    "FROM",
-    "WHERE",
-    "GROUP",
-    "BY",
-    "HAVING",
-    "QUALIFY",
-    "ORDER",
-    "LIMIT",
-    "JOIN",
-    "LEFT",
-    "RIGHT",
-    "FULL",
-    "INNER",
-    "OUTER",
-    "CROSS",
-    "ON",
-    "WITH",
-    "RECURSIVE",
-    "AS",
-    "UNION",
-    "ALL",
-    "DISTINCT",
-    "AND",
-    "OR",
-    "NOT",
-    "IN",
-    "IS",
-    "NULL",
-    "CASE",
-    "WHEN",
-    "THEN",
-    "ELSE",
-    "END",
-    "OVER",
-    "PARTITION",
-    "UNNEST",
-    "STRUCT",
-    "ARRAY",
-    "EXCEPT",
-    "REPLACE",
-    "INTERSECT",
-    "OFFSET",
-    "ORDINAL"
+    "SELECT", "FROM", "WHERE", "GROUP", "BY", "HAVING",
+    "QUALIFY", "ORDER", "LIMIT", "JOIN", "LEFT", "RIGHT",
+    "FULL", "INNER", "OUTER", "CROSS", "ON", "WITH",
+    "RECURSIVE", "AS", "UNION", "ALL", "DISTINCT", "AND",
+    "OR", "NOT", "IN", "IS", "NULL", "TRUE", "FALSE",
+    "CASE", "WHEN", "THEN", "ELSE", "END", "OVER",
+    "PARTITION", "UNNEST", "STRUCT", "ARRAY", "EXCEPT",
+    "REPLACE", "INTERSECT", "OFFSET", "ORDINAL", "ASC",
+    "DESC"
   ]);
 
   const SYMBOLS = new Set([
-    "(",
-    ")",
-    ",",
-    ".",
-    ";",
-    "[",
-    "]"
+    "(", ")", ",", ".", ";", "[", "]"
   ]);
 
   const SINGLE_OPERATORS = new Set([
-    "=",
-    "+",
-    "-",
-    "*",
-    "/",
-    "%",
-    "<",
-    ">",
-    "!"
+    "=", "+", "-", "*", "/", "%", "<", ">", "!"
   ]);
 
   const DOUBLE_OPERATORS = new Set([
-    ">=",
-    "<=",
-    "!=",
-    "<>",
-    "||"
+    ">=", "<=", "!=", "<>", "||"
   ]);
 
   function pushToken(
@@ -115,24 +74,24 @@ function tokenize(sqlText) {
     });
   }
 
-  function isSpace(ch) {
-    return /\s/.test(ch);
+  function isSpace(character) {
+    return /\s/.test(character);
   }
 
-  function isIdentifierStart(ch) {
-    return /[A-Za-z_]/.test(ch);
+  function isIdentifierStart(character) {
+    return /[A-Za-z_]/.test(character);
   }
 
-  function isIdentifierPart(ch) {
-    return /[A-Za-z0-9_]/.test(ch);
+  function isIdentifierPart(character) {
+    return /[A-Za-z0-9_$]/.test(character);
   }
 
-  function isDigit(ch) {
-    return /[0-9]/.test(ch);
+  function isDigit(character) {
+    return /[0-9]/.test(character);
   }
 
-  function advanceChar(ch) {
-    if (ch === "\n") {
+  function advanceCharacter(character) {
+    if (character === "\n") {
       line++;
       column = 1;
     } else {
@@ -143,24 +102,19 @@ function tokenize(sqlText) {
   }
 
   while (index < sqlText.length) {
-    const ch = sqlText[index];
+    const character = sqlText[index];
 
-    /*
-     * 空白
-     */
-    if (isSpace(ch)) {
-      advanceChar(ch);
+    if (isSpace(character)) {
+      advanceCharacter(character);
       continue;
     }
 
     const startLine = line;
     const startColumn = column;
 
-    /*
-     * 1行コメント
-     */
+    /* 1行コメント */
     if (
-      ch === "-" &&
+      character === "-" &&
       sqlText[index + 1] === "-"
     ) {
       let value = "";
@@ -169,8 +123,10 @@ function tokenize(sqlText) {
         index < sqlText.length &&
         sqlText[index] !== "\n"
       ) {
-        value += sqlText[index];
-        advanceChar(sqlText[index]);
+        const currentCharacter = sqlText[index];
+
+        value += currentCharacter;
+        advanceCharacter(currentCharacter);
       }
 
       pushToken(
@@ -184,33 +140,32 @@ function tokenize(sqlText) {
       continue;
     }
 
-    /*
-     * ブロックコメント
-     */
+    /* ブロックコメント */
     if (
-      ch === "/" &&
+      character === "/" &&
       sqlText[index + 1] === "*"
     ) {
       let value = "";
 
       while (index < sqlText.length) {
-        const current = sqlText[index];
+        const currentCharacter = sqlText[index];
 
-        value += current;
+        value += currentCharacter;
 
         if (
-          current === "*" &&
+          currentCharacter === "*" &&
           sqlText[index + 1] === "/"
         ) {
-          advanceChar(current);
+          advanceCharacter(currentCharacter);
 
-          value += sqlText[index];
-          advanceChar(sqlText[index]);
+          const closingSlash = sqlText[index];
+          value += closingSlash;
+          advanceCharacter(closingSlash);
 
           break;
         }
 
-        advanceChar(current);
+        advanceCharacter(currentCharacter);
       }
 
       pushToken(
@@ -224,34 +179,31 @@ function tokenize(sqlText) {
       continue;
     }
 
-    /*
-     * バッククォート識別子
-     */
-    if (ch === "`") {
-      let value = "";
+    /* バッククォート識別子 */
+    if (character === "`") {
+      let value = character;
 
-      value += ch;
-      advanceChar(ch);
+      advanceCharacter(character);
 
       while (index < sqlText.length) {
-        const current = sqlText[index];
+        const currentCharacter = sqlText[index];
 
-        value += current;
-        advanceChar(current);
+        value += currentCharacter;
+        advanceCharacter(currentCharacter);
 
-        if (current === "`") {
+        if (currentCharacter === "`") {
           break;
         }
       }
 
-      const normalized =
+      const normalizedValue =
         value.length >= 2
           ? value.substring(1, value.length - 1)
           : value;
 
       pushToken(
         value,
-        normalized,
+        normalizedValue,
         "BACKTICK_IDENTIFIER",
         startLine,
         startColumn
@@ -260,47 +212,50 @@ function tokenize(sqlText) {
       continue;
     }
 
-    /*
-     * 文字列リテラル
-     */
-    if (ch === "'" || ch === '"') {
-      const quote = ch;
-      let value = "";
+    /* 文字列リテラル */
+    if (
+      character === "'" ||
+      character === '"'
+    ) {
+      const quoteCharacter = character;
+      let value = character;
 
-      value += ch;
-      advanceChar(ch);
+      advanceCharacter(character);
 
       while (index < sqlText.length) {
-        const current = sqlText[index];
+        const currentCharacter = sqlText[index];
 
-        value += current;
-        advanceChar(current);
+        value += currentCharacter;
+        advanceCharacter(currentCharacter);
 
         /*
-         * '' や "" のエスケープ
+         * '' または "" によるエスケープ
          */
         if (
-          current === quote &&
-          sqlText[index] === quote
+          currentCharacter === quoteCharacter &&
+          sqlText[index] === quoteCharacter
         ) {
-          value += sqlText[index];
-          advanceChar(sqlText[index]);
+          const escapedQuote = sqlText[index];
+
+          value += escapedQuote;
+          advanceCharacter(escapedQuote);
+
           continue;
         }
 
-        if (current === quote) {
+        if (currentCharacter === quoteCharacter) {
           break;
         }
       }
 
-      const normalized =
+      const normalizedValue =
         value.length >= 2
           ? value.substring(1, value.length - 1)
           : value;
 
       pushToken(
         value,
-        normalized,
+        normalizedValue,
         "STRING",
         startLine,
         startColumn
@@ -309,30 +264,30 @@ function tokenize(sqlText) {
       continue;
     }
 
-    /*
-     * 識別子・予約語
-     */
-    if (isIdentifierStart(ch)) {
+    /* 識別子・予約語 */
+    if (isIdentifierStart(character)) {
       let value = "";
 
       while (
         index < sqlText.length &&
         isIdentifierPart(sqlText[index])
       ) {
-        value += sqlText[index];
-        advanceChar(sqlText[index]);
+        const currentCharacter = sqlText[index];
+
+        value += currentCharacter;
+        advanceCharacter(currentCharacter);
       }
 
-      const normalized = value.toUpperCase();
+      const normalizedValue = value.toUpperCase();
 
       const tokenType =
-        KEYWORDS.has(normalized)
+        KEYWORDS.has(normalizedValue)
           ? "KEYWORD"
           : "IDENTIFIER";
 
       pushToken(
         value,
-        normalized,
+        normalizedValue,
         tokenType,
         startLine,
         startColumn
@@ -341,18 +296,18 @@ function tokenize(sqlText) {
       continue;
     }
 
-    /*
-     * 数値
-     */
-    if (isDigit(ch)) {
+    /* 数値 */
+    if (isDigit(character)) {
       let value = "";
 
       while (
         index < sqlText.length &&
         /[0-9.]/.test(sqlText[index])
       ) {
-        value += sqlText[index];
-        advanceChar(sqlText[index]);
+        const currentCharacter = sqlText[index];
+
+        value += currentCharacter;
+        advanceCharacter(currentCharacter);
       }
 
       pushToken(
@@ -366,9 +321,7 @@ function tokenize(sqlText) {
       continue;
     }
 
-    /*
-     * 2文字演算子
-     */
+    /* 2文字演算子 */
     const twoCharacters =
       sqlText.substring(index, index + 2);
 
@@ -381,69 +334,72 @@ function tokenize(sqlText) {
         startColumn
       );
 
-      advanceChar(sqlText[index]);
-      advanceChar(sqlText[index]);
+      advanceCharacter(sqlText[index]);
+      advanceCharacter(sqlText[index]);
 
       continue;
     }
 
-    /*
-     * 記号
-     */
-    if (SYMBOLS.has(ch)) {
+    /* 記号 */
+    if (SYMBOLS.has(character)) {
       pushToken(
-        ch,
-        ch,
+        character,
+        character,
         "SYMBOL",
         startLine,
         startColumn
       );
 
-      if (ch === "(" || ch === "[") {
+      if (
+        character === "(" ||
+        character === "["
+      ) {
         parenDepth++;
-      } else if (ch === ")" || ch === "]") {
+      } else if (
+        character === ")" ||
+        character === "]"
+      ) {
         parenDepth--;
       }
 
-      advanceChar(ch);
+      advanceCharacter(character);
       continue;
     }
 
-    /*
-     * 1文字演算子
-     */
-    if (SINGLE_OPERATORS.has(ch)) {
+    /* 1文字演算子 */
+    if (SINGLE_OPERATORS.has(character)) {
       pushToken(
-        ch,
-        ch,
+        character,
+        character,
         "OPERATOR",
         startLine,
         startColumn
       );
 
-      advanceChar(ch);
+      advanceCharacter(character);
       continue;
     }
 
-    /*
-     * 未対応文字
-     */
     pushToken(
-      ch,
-      ch,
+      character,
+      character,
       "UNKNOWN",
       startLine,
       startColumn
     );
 
-    advanceChar(ch);
+    advanceCharacter(character);
   }
 
   return tokens;
 }
 
 
-function normalizedToken(tokens, index) {
+/* ============================================================
+ * 共通関数
+ * ============================================================ */
+
+function normalizedTokenAt(tokens, index) {
   const token = tokens[index];
 
   if (!token) {
@@ -454,46 +410,141 @@ function normalizedToken(tokens, index) {
 }
 
 
-function detectClause(tokens, index) {
-  const first = normalizedToken(tokens, index);
-  const second = normalizedToken(tokens, index + 1);
+function sliceTokensBySequence(
+  tokens,
+  startSequence,
+  endSequence
+) {
+  return tokens.filter(
+    (token) =>
+      token.token_seq >= startSequence &&
+      token.token_seq <= endSequence
+  );
+}
 
-  if (first === "SELECT") {
+
+function trimCommentTokens(tokens) {
+  let startIndex = 0;
+  let endIndex = tokens.length - 1;
+
+  while (
+    startIndex <= endIndex &&
+    tokens[startIndex].token_type === "COMMENT"
+  ) {
+    startIndex++;
+  }
+
+  while (
+    endIndex >= startIndex &&
+    tokens[endIndex].token_type === "COMMENT"
+  ) {
+    endIndex--;
+  }
+
+  return tokens.slice(startIndex, endIndex + 1);
+}
+
+
+function tokensToText(tokens) {
+  let result = "";
+
+  for (
+    let tokenIndex = 0;
+    tokenIndex < tokens.length;
+    tokenIndex++
+  ) {
+    const currentToken = tokens[tokenIndex];
+    const previousToken = tokens[tokenIndex - 1];
+
+    if (!previousToken) {
+      result += currentToken.token;
+      continue;
+    }
+
+    const noSpaceBefore =
+      currentToken.token === "." ||
+      currentToken.token === "," ||
+      currentToken.token === ")" ||
+      currentToken.token === "]";
+
+    const noSpaceAfterPrevious =
+      previousToken.token === "." ||
+      previousToken.token === "(" ||
+      previousToken.token === "[";
+
+    if (
+      noSpaceBefore ||
+      noSpaceAfterPrevious
+    ) {
+      result += currentToken.token;
+    } else {
+      result += " " + currentToken.token;
+    }
+  }
+
+  return result;
+}
+
+
+function isIdentifierToken(token) {
+  if (!token) {
+    return false;
+  }
+
+  return (
+    token.token_type === "IDENTIFIER" ||
+    token.token_type === "BACKTICK_IDENTIFIER"
+  );
+}
+
+
+/* ============================================================
+ * Clause Parser
+ * ============================================================ */
+
+function detectClause(tokens, index) {
+  const firstToken =
+    normalizedTokenAt(tokens, index);
+
+  const secondToken =
+    normalizedTokenAt(tokens, index + 1);
+
+  if (firstToken === "SELECT") {
     return {
       clause: "SELECT",
       token_length: 1
     };
   }
 
-  if (first === "FROM") {
+  if (firstToken === "FROM") {
     return {
       clause: "FROM",
       token_length: 1
     };
   }
 
-  if (first === "WHERE") {
+  if (firstToken === "WHERE") {
     return {
       clause: "WHERE",
       token_length: 1
     };
   }
 
-  if (first === "HAVING") {
+  if (firstToken === "HAVING") {
     return {
       clause: "HAVING",
       token_length: 1
     };
   }
 
-  if (first === "QUALIFY") {
+  if (firstToken === "QUALIFY") {
     return {
       clause: "QUALIFY",
       token_length: 1
     };
   }
 
-  if (first === "LIMIT") {
+  if (firstToken === "LIMIT") {
     return {
       clause: "LIMIT",
       token_length: 1
@@ -501,8 +552,8 @@ function detectClause(tokens, index) {
   }
 
   if (
-    first === "GROUP" &&
-    second === "BY"
+    firstToken === "GROUP" &&
+    secondToken === "BY"
   ) {
     return {
       clause: "GROUP_BY",
@@ -511,8 +562,8 @@ function detectClause(tokens, index) {
   }
 
   if (
-    first === "ORDER" &&
-    second === "BY"
+    firstToken === "ORDER" &&
+    secondToken === "BY"
   ) {
     return {
       clause: "ORDER_BY",
@@ -527,64 +578,59 @@ function detectClause(tokens, index) {
 function parseClauses(tokens) {
   const clauses = [];
 
-  /*
-   * コメントはClause判定には使わない。
-   */
   const effectiveTokens = tokens.filter(
     (token) => token.token_type !== "COMMENT"
   );
 
   for (
-    let index = 0;
-    index < effectiveTokens.length;
-    index++
+    let tokenIndex = 0;
+    tokenIndex < effectiveTokens.length;
+    tokenIndex++
   ) {
-    const currentToken = effectiveTokens[index];
+    const currentToken =
+      effectiveTokens[tokenIndex];
 
-    /*
-     * スカラーサブクエリや関数内のClauseは
-     * この段階では対象外。
-     */
     if (currentToken.paren_depth !== 0) {
       continue;
     }
 
-    const detected =
-      detectClause(effectiveTokens, index);
+    const detectedClause =
+      detectClause(effectiveTokens, tokenIndex);
 
-    if (!detected) {
+    if (!detectedClause) {
       continue;
     }
 
     clauses.push({
       clause_seq: clauses.length + 1,
-      clause: detected.clause,
+      clause: detectedClause.clause,
       clause_start_seq: currentToken.token_seq,
       body_start_seq:
         currentToken.token_seq +
-        detected.token_length,
-      body_end_seq: null,
-      paren_depth: currentToken.paren_depth
+        detectedClause.token_length,
+      body_end_seq: null
     });
   }
 
-  /*
-   * 各Clauseの終了位置を設定する。
-   */
   for (
-    let index = 0;
-    index < clauses.length;
-    index++
+    let clauseIndex = 0;
+    clauseIndex < clauses.length;
+    clauseIndex++
   ) {
-    const currentClause = clauses[index];
-    const nextClause = clauses[index + 1];
+    const currentClause =
+      clauses[clauseIndex];
+
+    const nextClause =
+      clauses[clauseIndex + 1];
 
     if (nextClause) {
       currentClause.body_end_seq =
         nextClause.clause_start_seq - 1;
     } else if (effectiveTokens.length > 0) {
       const lastToken =
-        effectiveTokens[effectiveTokens.length - 1];
+        effectiveTokens[
+          effectiveTokens.length - 1
+        ];
 
       currentClause.body_end_seq =
         lastToken.token_seq;
@@ -595,11 +641,798 @@ function parseClauses(tokens) {
 }
 
 
-if (sql === null) {
+/* ============================================================
+ * SELECT Parser
+ * ============================================================ */
+
+function splitTopLevelByComma(tokens) {
+  const result = [];
+  let currentItemTokens = [];
+
+  for (const currentToken of tokens) {
+    const isTopLevelComma =
+      currentToken.token === "," &&
+      currentToken.paren_depth === 0;
+
+    if (isTopLevelComma) {
+      const completedItem =
+        trimCommentTokens(currentItemTokens);
+
+      if (completedItem.length > 0) {
+        result.push(completedItem);
+      }
+
+      currentItemTokens = [];
+      continue;
+    }
+
+    currentItemTokens.push(currentToken);
+  }
+
+  const lastItem =
+    trimCommentTokens(currentItemTokens);
+
+  if (lastItem.length > 0) {
+    result.push(lastItem);
+  }
+
+  return result;
+}
+
+
+function parseSelectAlias(itemTokens) {
+  if (itemTokens.length === 0) {
+    return {
+      expression: "",
+      output_alias: null,
+      alias_type: "NONE"
+    };
+  }
+
+  /*
+   * 明示的なAS
+   */
+  for (
+    let tokenIndex = itemTokens.length - 2;
+    tokenIndex >= 0;
+    tokenIndex--
+  ) {
+    const currentToken =
+      itemTokens[tokenIndex];
+
+    if (
+      currentToken.normalized_token === "AS" &&
+      currentToken.paren_depth === 0
+    ) {
+      const aliasToken =
+        itemTokens[tokenIndex + 1];
+
+      const expressionTokens =
+        itemTokens.slice(0, tokenIndex);
+
+      return {
+        expression:
+          tokensToText(expressionTokens),
+        output_alias:
+          aliasToken
+            ? aliasToken.normalized_token
+            : null,
+        alias_type: "EXPLICIT_AS"
+      };
+    }
+  }
+
+  /*
+   * table_alias.column_name
+   */
+  if (itemTokens.length >= 3) {
+    const dotToken =
+      itemTokens[itemTokens.length - 2];
+
+    const columnToken =
+      itemTokens[itemTokens.length - 1];
+
+    if (
+      dotToken.token === "." &&
+      isIdentifierToken(columnToken)
+    ) {
+      return {
+        expression: tokensToText(itemTokens),
+        output_alias:
+          columnToken.normalized_token,
+        alias_type: "DERIVED_COLUMN"
+      };
+    }
+  }
+
+  /*
+   * 単独カラム
+   */
+  if (
+    itemTokens.length === 1 &&
+    isIdentifierToken(itemTokens[0])
+  ) {
+    return {
+      expression: tokensToText(itemTokens),
+      output_alias:
+        itemTokens[0].normalized_token,
+      alias_type: "DERIVED_COLUMN"
+    };
+  }
+
+  /*
+   * AS省略
+   */
+  const lastToken =
+    itemTokens[itemTokens.length - 1];
+
+  const previousToken =
+    itemTokens[itemTokens.length - 2];
+
+  if (
+    itemTokens.length >= 2 &&
+    isIdentifierToken(lastToken) &&
+    previousToken &&
+    previousToken.token !== "."
+  ) {
+    const expressionTokens =
+      itemTokens.slice(
+        0,
+        itemTokens.length - 1
+      );
+
+    return {
+      expression:
+        tokensToText(expressionTokens),
+      output_alias:
+        lastToken.normalized_token,
+      alias_type: "IMPLICIT"
+    };
+  }
+
+  return {
+    expression: tokensToText(itemTokens),
+    output_alias: null,
+    alias_type: "NONE"
+  };
+}
+
+
+function removeSelectModifiers(selectTokens) {
+  const result = selectTokens.slice();
+
+  if (
+    result.length > 0 &&
+    (
+      result[0].normalized_token === "DISTINCT" ||
+      result[0].normalized_token === "ALL"
+    )
+  ) {
+    result.shift();
+  }
+
+  return result;
+}
+
+
+function parseSelect(tokens, selectClause) {
+  let selectTokens =
+    sliceTokensBySequence(
+      tokens,
+      selectClause.body_start_seq,
+      selectClause.body_end_seq
+    );
+
+  selectTokens =
+    removeSelectModifiers(selectTokens);
+
+  const selectItemTokenArrays =
+    splitTopLevelByComma(selectTokens);
+
+  const selectItems = [];
+
+  for (
+    let itemIndex = 0;
+    itemIndex < selectItemTokenArrays.length;
+    itemIndex++
+  ) {
+    const itemTokens =
+      selectItemTokenArrays[itemIndex];
+
+    const parsedAlias =
+      parseSelectAlias(itemTokens);
+
+    selectItems.push({
+      expression: parsedAlias.expression,
+      output_alias:
+        parsedAlias.output_alias,
+      alias_type:
+        parsedAlias.alias_type,
+      start_token_seq:
+        itemTokens[0].token_seq,
+      end_token_seq:
+        itemTokens[
+          itemTokens.length - 1
+        ].token_seq
+    });
+  }
+
+  return selectItems;
+}
+
+
+/* ============================================================
+ * FROM Parser
+ * ============================================================ */
+
+const JOIN_MODIFIERS = new Set([
+  "LEFT",
+  "RIGHT",
+  "FULL",
+  "INNER",
+  "OUTER",
+  "CROSS"
+]);
+
+
+const SOURCE_STOP_WORDS = new Set([
+  "ON",
+  "USING",
+  "JOIN",
+  "LEFT",
+  "RIGHT",
+  "FULL",
+  "INNER",
+  "OUTER",
+  "CROSS",
+  "WHERE",
+  "GROUP",
+  "HAVING",
+  "QUALIFY",
+  "ORDER",
+  "LIMIT"
+]);
+
+
+function findMatchingCloseParenthesis(
+  tokens,
+  openIndex
+) {
+  const openToken = tokens[openIndex];
+
+  if (
+    !openToken ||
+    openToken.token !== "("
+  ) {
+    return -1;
+  }
+
+  const targetDepth =
+    openToken.paren_depth + 1;
+
+  for (
+    let tokenIndex = openIndex + 1;
+    tokenIndex < tokens.length;
+    tokenIndex++
+  ) {
+    const currentToken =
+      tokens[tokenIndex];
+
+    if (
+      currentToken.token === ")" &&
+      currentToken.paren_depth === targetDepth
+    ) {
+      return tokenIndex;
+    }
+  }
+
+  return -1;
+}
+
+
+function parseSourceAlias(tokens, startIndex) {
+  const currentToken = tokens[startIndex];
+
+  if (!currentToken) {
+    return {
+      source_alias: null,
+      next_index: startIndex
+    };
+  }
+
+  /*
+   * AS alias
+   */
+  if (
+    currentToken.normalized_token === "AS"
+  ) {
+    const aliasToken =
+      tokens[startIndex + 1];
+
+    if (isIdentifierToken(aliasToken)) {
+      return {
+        source_alias:
+          aliasToken.normalized_token,
+        next_index: startIndex + 2
+      };
+    }
+  }
+
+  /*
+   * AS省略
+   */
+  if (
+    isIdentifierToken(currentToken) &&
+    !SOURCE_STOP_WORDS.has(
+      currentToken.normalized_token
+    )
+  ) {
+    return {
+      source_alias:
+        currentToken.normalized_token,
+      next_index: startIndex + 1
+    };
+  }
+
+  return {
+    source_alias: null,
+    next_index: startIndex
+  };
+}
+
+
+function parseDottedSourceName(tokens, startIndex) {
+  const firstToken = tokens[startIndex];
+
+  if (!firstToken) {
+    return null;
+  }
+
+  /*
+   * `project.dataset.table`
+   */
+  if (
+    firstToken.token_type ===
+    "BACKTICK_IDENTIFIER"
+  ) {
+    return {
+      source_name:
+        firstToken.normalized_token,
+      source_type: "OBJECT",
+      next_index: startIndex + 1,
+      end_token_seq:
+        firstToken.token_seq
+    };
+  }
+
+  if (!isIdentifierToken(firstToken)) {
+    return null;
+  }
+
+  const parts = [firstToken.token];
+  let tokenIndex = startIndex + 1;
+  let endToken = firstToken;
+
+  while (
+    tokenIndex + 1 < tokens.length &&
+    tokens[tokenIndex].token === "." &&
+    isIdentifierToken(
+      tokens[tokenIndex + 1]
+    )
+  ) {
+    parts.push(tokens[tokenIndex + 1].token);
+
+    endToken = tokens[tokenIndex + 1];
+    tokenIndex += 2;
+  }
+
+  return {
+    source_name: parts.join("."),
+    source_type: "OBJECT",
+    next_index: tokenIndex,
+    end_token_seq:
+      endToken.token_seq
+  };
+}
+
+
+function parseSource(tokens, startIndex) {
+  const firstToken = tokens[startIndex];
+
+  if (!firstToken) {
+    return null;
+  }
+
+  /*
+   * FROM (SELECT ...) alias
+   */
+  if (firstToken.token === "(") {
+    const closeIndex =
+      findMatchingCloseParenthesis(
+        tokens,
+        startIndex
+      );
+
+    if (closeIndex < 0) {
+      return null;
+    }
+
+    const subqueryTokens =
+      tokens.slice(
+        startIndex + 1,
+        closeIndex
+      );
+
+    const aliasResult =
+      parseSourceAlias(
+        tokens,
+        closeIndex + 1
+      );
+
+    return {
+      source_type: "SUBQUERY",
+      source_name:
+        tokensToText(subqueryTokens),
+      source_alias:
+        aliasResult.source_alias,
+      start_token_seq:
+        firstToken.token_seq,
+      end_token_seq:
+        tokens[closeIndex].token_seq,
+      next_index:
+        aliasResult.next_index
+    };
+  }
+
+  /*
+   * UNNEST(expression)
+   */
+  if (
+    firstToken.normalized_token === "UNNEST"
+  ) {
+    const openIndex = startIndex + 1;
+
+    if (
+      !tokens[openIndex] ||
+      tokens[openIndex].token !== "("
+    ) {
+      return null;
+    }
+
+    const closeIndex =
+      findMatchingCloseParenthesis(
+        tokens,
+        openIndex
+      );
+
+    if (closeIndex < 0) {
+      return null;
+    }
+
+    const unnestExpressionTokens =
+      tokens.slice(
+        openIndex + 1,
+        closeIndex
+      );
+
+    const aliasResult =
+      parseSourceAlias(
+        tokens,
+        closeIndex + 1
+      );
+
+    return {
+      source_type: "UNNEST",
+      source_name:
+        tokensToText(
+          unnestExpressionTokens
+        ),
+      source_alias:
+        aliasResult.source_alias,
+      start_token_seq:
+        firstToken.token_seq,
+      end_token_seq:
+        tokens[closeIndex].token_seq,
+      next_index:
+        aliasResult.next_index
+    };
+  }
+
+  /*
+   * 通常のテーブル・View・CTE名
+   */
+  const dottedSource =
+    parseDottedSourceName(
+      tokens,
+      startIndex
+    );
+
+  if (!dottedSource) {
+    return null;
+  }
+
+  const aliasResult =
+    parseSourceAlias(
+      tokens,
+      dottedSource.next_index
+    );
+
+  return {
+    source_type:
+      dottedSource.source_type,
+    source_name:
+      dottedSource.source_name,
+    source_alias:
+      aliasResult.source_alias,
+    start_token_seq:
+      firstToken.token_seq,
+    end_token_seq:
+      dottedSource.end_token_seq,
+    next_index:
+      aliasResult.next_index
+  };
+}
+
+
+function detectJoin(tokens, startIndex) {
+  let tokenIndex = startIndex;
+  const words = [];
+
+  while (
+    tokenIndex < tokens.length &&
+    JOIN_MODIFIERS.has(
+      tokens[tokenIndex].normalized_token
+    )
+  ) {
+    words.push(
+      tokens[tokenIndex].normalized_token
+    );
+
+    tokenIndex++;
+  }
+
+  if (
+    tokens[tokenIndex] &&
+    tokens[tokenIndex].normalized_token === "JOIN"
+  ) {
+    words.push("JOIN");
+
+    return {
+      join_type: words.join("_"),
+      source_start_index:
+        tokenIndex + 1
+    };
+  }
+
+  return null;
+}
+
+
+function parseFrom(tokens, fromClause) {
+  const fromTokens =
+    sliceTokensBySequence(
+      tokens,
+      fromClause.body_start_seq,
+      fromClause.body_end_seq
+    ).filter(
+      (token) =>
+        token.token_type !== "COMMENT"
+    );
+
+  const sources = [];
+  let tokenIndex = 0;
+
+  /*
+   * FROM直後の最初のSource
+   */
+  const firstSource =
+    parseSource(
+      fromTokens,
+      tokenIndex
+    );
+
+  if (firstSource) {
+    sources.push({
+      join_type: "FROM",
+      source_type:
+        firstSource.source_type,
+      source_name:
+        firstSource.source_name,
+      source_alias:
+        firstSource.source_alias,
+      start_token_seq:
+        firstSource.start_token_seq,
+      end_token_seq:
+        firstSource.end_token_seq
+    });
+
+    tokenIndex =
+      firstSource.next_index;
+  }
+
+  while (tokenIndex < fromTokens.length) {
+    const currentToken =
+      fromTokens[tokenIndex];
+
+    /*
+     * カンマJOIN
+     *
+     * FROM table_a a, UNNEST(a.items) item
+     */
+    if (
+      currentToken.token === "," &&
+      currentToken.paren_depth === 0
+    ) {
+      const commaSource =
+        parseSource(
+          fromTokens,
+          tokenIndex + 1
+        );
+
+      if (commaSource) {
+        sources.push({
+          join_type: "COMMA",
+          source_type:
+            commaSource.source_type,
+          source_name:
+            commaSource.source_name,
+          source_alias:
+            commaSource.source_alias,
+          start_token_seq:
+            commaSource.start_token_seq,
+          end_token_seq:
+            commaSource.end_token_seq
+        });
+
+        tokenIndex =
+          commaSource.next_index;
+
+        continue;
+      }
+    }
+
+    /*
+     * JOIN
+     */
+    const join =
+      detectJoin(
+        fromTokens,
+        tokenIndex
+      );
+
+    if (join) {
+      const joinedSource =
+        parseSource(
+          fromTokens,
+          join.source_start_index
+        );
+
+      if (joinedSource) {
+        sources.push({
+          join_type:
+            join.join_type,
+          source_type:
+            joinedSource.source_type,
+          source_name:
+            joinedSource.source_name,
+          source_alias:
+            joinedSource.source_alias,
+          start_token_seq:
+            joinedSource.start_token_seq,
+          end_token_seq:
+            joinedSource.end_token_seq
+        });
+
+        tokenIndex =
+          joinedSource.next_index;
+
+        continue;
+      }
+    }
+
+    tokenIndex++;
+  }
+
+  return sources;
+}
+
+
+/* ============================================================
+ * UDF Entry Point
+ * ============================================================ */
+
+if (sql_text === null) {
   return [];
 }
 
-const tokens = tokenize(sql);
+const tokens =
+  tokenize(sql_text);
 
-return parseClauses(tokens);
+const clauses =
+  parseClauses(tokens);
+
+const output = [];
+
+/*
+ * SELECT項目
+ */
+const selectClause = clauses.find(
+  (clause) =>
+    clause.clause === "SELECT"
+);
+
+if (selectClause) {
+  const selectItems =
+    parseSelect(
+      tokens,
+      selectClause
+    );
+
+  for (const selectItem of selectItems) {
+    output.push({
+      record_seq: output.length + 1,
+      record_type: "SELECT_ITEM",
+
+      expression:
+        selectItem.expression,
+      output_alias:
+        selectItem.output_alias,
+      alias_type:
+        selectItem.alias_type,
+
+      source_type: null,
+      source_name: null,
+      source_alias: null,
+      join_type: null,
+
+      start_token_seq:
+        selectItem.start_token_seq,
+      end_token_seq:
+        selectItem.end_token_seq
+    });
+  }
+}
+
+/*
+ * FROM・JOIN
+ */
+const fromClause = clauses.find(
+  (clause) =>
+    clause.clause === "FROM"
+);
+
+if (fromClause) {
+  const sources =
+    parseFrom(
+      tokens,
+      fromClause
+    );
+
+  for (const source of sources) {
+    output.push({
+      record_seq: output.length + 1,
+      record_type: "SOURCE",
+
+      expression: null,
+      output_alias: null,
+      alias_type: null,
+
+      source_type:
+        source.source_type,
+      source_name:
+        source.source_name,
+      source_alias:
+        source.source_alias,
+      join_type:
+        source.join_type,
+
+      start_token_seq:
+        source.start_token_seq,
+      end_token_seq:
+        source.end_token_seq
+    });
+  }
+}
+
+return output;
 """;
