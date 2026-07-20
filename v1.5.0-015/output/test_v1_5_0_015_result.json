@@ -1,0 +1,58 @@
+{
+  "test": "test_v1_5_0_015",
+  "status": "PASS",
+  "mode": "STATIC",
+  "engineModule": null,
+  "sqlMetrics": {
+    "sqlLines": 131,
+    "tokenCount": 1163,
+    "cteCount": 13,
+    "cteNames": [
+      "CUSTOMER_BASE",
+      "PURCHASE_BASE",
+      "PRODUCT_BASE",
+      "PURCHASE_FACT",
+      "CUSTOMER_SALES",
+      "LATEST_PURCHASE",
+      "PURCHASE_CHAIN",
+      "CATEGORY_SALES_SOURCE",
+      "CATEGORY_SALES",
+      "CUSTOMER_BUSINESS",
+      "CUSTOMER_RANK",
+      "CUSTOMER_DASHBOARD",
+      "FINAL_OUTPUT"
+    ],
+    "joinCount": 5,
+    "leftJoinCount": 5,
+    "unionAllCount": 1,
+    "pivotCount": 1,
+    "unnestCount": 1,
+    "caseCount": 2,
+    "featureChecks": {
+      "WITH": true,
+      "LEFT_JOIN": true,
+      "UNION_ALL": true,
+      "ARRAY_AGG": true,
+      "UNNEST": true,
+      "STRUCT": true,
+      "CASE": true,
+      "COALESCE": true,
+      "ROW_NUMBER": true,
+      "QUALIFY": true,
+      "PIVOT": true,
+      "EXISTS": true,
+      "SELECT_STAR": true,
+      "EXCEPT": true,
+      "REPLACE": true,
+      "WINDOW": true
+    }
+  },
+  "resultMetrics": {
+    "astNodes": null,
+    "scopeDepth": 0,
+    "dependencyDepth": 0,
+    "outputColumns": 0
+  },
+  "performance": null,
+  "failures": []
+}

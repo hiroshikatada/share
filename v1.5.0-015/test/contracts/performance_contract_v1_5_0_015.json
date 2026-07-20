@@ -1,0 +1,14 @@
+{
+  "contractVersion": "1.0",
+  "minSqlLines": 120,
+  "minTokenCount": 700,
+  "minCteCount": 12,
+  "minJoinCount": 5,
+  "minOutputColumns": 20,
+  "minDependencyDepth": 7,
+  "requiredFeatures": ["WITH","LEFT_JOIN","UNION_ALL","ARRAY_AGG","UNNEST","STRUCT","CASE","COALESCE","ROW_NUMBER","QUALIFY","PIVOT","EXISTS","SELECT_STAR","EXCEPT","REPLACE","WINDOW"],
+  "iterations": 15,
+  "maxMedianMs": 1000,
+  "maxP95Ms": 3000,
+  "maxHeapDeltaMb": 96
+}
