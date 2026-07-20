@@ -1,7 +1,0 @@
-{
-  "format_version": "1.0",
-  "case_name": "boss_customer_sales_mart",
-  "generated": false,
-  "note": "Connect the engine and run with UPDATE_GOLDEN=1 to create the baseline.",
-  "canonical_result": null
-}
